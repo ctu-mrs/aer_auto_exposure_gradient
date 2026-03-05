@@ -1,74 +1,37 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
-from launch.substitutions import LaunchConfiguration, EnvironmentVariable
+from launch.substitutions import LaunchConfiguration, EnvironmentVariable, PathJoinSubstitution
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
+from launch_ros.substitutions import FindPackageShare
+
 
 def get_processed_launch_objects(context):
     uav_name = LaunchConfiguration('uav_name').perform(context)
     camera_name = LaunchConfiguration('camera_name').perform(context)
+    custom_config = LaunchConfiguration('custom_config').perform(context)
+
+    package_params = PathJoinSubstitution([
+        FindPackageShare('aer_auto_exposure_gradient'),
+        'config', 'exp_node_params.yaml'
+    ]).perform(context)
+
+    parameters = [package_params]
+    if custom_config != '':
+        parameters.append(custom_config)
 
     aer_node = ComposableNode(
         package='aer_auto_exposure_gradient',
         plugin='exp_node::ExpNode',
         name='aer_node',
         namespace=uav_name,
-        parameters=[{
-            # --- Image source ---
-            'image_topic': f'/{uav_name}/{camera_name}/image_raw',
-
-            # --- Actuator output topics ---
-            'shutter_speed_apply_topic': f'/{uav_name}/expose_us',
-            'gain_apply_topic': f'/{uav_name}/gain_db',
-            'led_apply_topic': '',           # empty = LED disabled
-
-            # --- Actuator slices: order defines priority (first = used first) ---
-            # Portions does not have to add up to the 100%.
-            'actuator_order': ['shutter', 'gain', 'led'],
-            'shutter_portion': 1.0,          # 50 % of [0,1] drives shutter
-            'shutter_max_us': 10000,           # shutter range: 0 – 5000 µs
-            'gain_portion': 0.5,             # 50 % of [0,1] drives gain
-            'gain_max': 12.0,                # gain range: 0 – 12 dB
-            'led_portion': 0.5,              # 50 % of [0,1] drives LED
-            'led_max': 40.0,                 # LED range: 0 – 40 W
-
-            # --- Optimizer initial state ---
-            'initial_exposure_level': 0.1,   # normalized [0,1] starting point
-
-            # --- Optimizer method ---
-            'shutter_update_method': 'gradient',   # 'simple' | 'gradient' | 'shim'
-
-            # --- Shim params ---
-            'shim_update_function': '2018',         # '2014' | '2018' (only for shim)
-            'kp': 0.02,
-
-            # --- Gradient optimizer params ---
-            'optimizer_loop_hz': 20,
-            'grad_k': 0.05,
-
-            # --- Simple optimizer params ---
-            'simple_step_size': 0.01,        # step per gamma-index unit (simple method)
-
-            # --- Image processing loop rates ---
-            'img_proc_loop_hz': 2,
-            'startup_delay': 1,
-
-            # --- Gamma / curve-fit settings ---
-            'shutter_update_method': 'gradient',
-            'curve_fit_method': 'log_quadratic',    # 'quadratic' | 'log_quadratic'
-            'gamma_range': 2.0,
-            'gamma_num_points': 5,
-            'gamma_x_offset': 0.0,
-
-            # --- Sweep (debug) ---
-            'do_sweep': False,
-            'sweep_steps': 100,
-
-            # --- Plotter (requires WITH_PLOTTER build flag) ---
-            'enable_plotter': True,
-
-            'shutter_limit_topic': f'/{uav_name}/shutter_limit'
-        }],
+        parameters=parameters,
+        remappings=[
+            ('image/in',        f'/{uav_name}/{camera_name}/image_raw'),
+            ('expose_us/out',   f'/{uav_name}/expose_us'),
+            ('gain_db/out',     f'/{uav_name}/gain_db'),
+            ('shutter_limit/in', f'/{uav_name}/shutter_limit'),
+        ],
         extra_arguments=[{'use_intra_process_comms': True}],
     )
 
@@ -82,6 +45,7 @@ def get_processed_launch_objects(context):
 
     return [container]
 
+
 def generate_launch_description():
     declare_uav_name = DeclareLaunchArgument(
         'uav_name',
@@ -92,11 +56,18 @@ def generate_launch_description():
     declare_camera_name = DeclareLaunchArgument(
         'camera_name',
         default_value='bluefox',
-        description='Camera name used in topic namespace'
+        description='Camera name used in topic remapping'
+    )
+
+    declare_custom_config = DeclareLaunchArgument(
+        'custom_config',
+        default_value='',
+        description='Path to a custom parameter yaml file (overrides package defaults)'
     )
 
     return LaunchDescription([
         declare_uav_name,
         declare_camera_name,
+        declare_custom_config,
         OpaqueFunction(function=get_processed_launch_objects),
     ])

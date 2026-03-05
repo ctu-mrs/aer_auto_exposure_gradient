@@ -1,0 +1,8 @@
+/**:
+  ros__parameters:
+
+    # Override any parameter from exp_node_params.yaml here.
+    # Example:
+    # shutter_max_us: 5000
+    # grad_k: 0.1
+    # shutter_update_method: 'simple'

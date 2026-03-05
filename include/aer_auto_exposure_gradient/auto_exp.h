@@ -112,7 +112,6 @@ class ExpNode : public rclcpp::Node {
   double kp;
   double R;  // parameter used in the nonlinear function in Shim's 2018 paper
   int gamma_index; // index to record the location of the optimum gamma value
-  std::string image_topic;
   std::string shutter_update_method;
   std::string shim_update_function;
   //std::string service_call ="camera/spinnaker_camera_nodelet/set_parameters";

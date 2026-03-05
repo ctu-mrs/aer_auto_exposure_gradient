@@ -6,9 +6,6 @@ namespace exp_node
 	: rclcpp::Node("exp_node", options), callback_start_time(nullptr)
 	{
 
-		declare_parameter<std::string>("image_topic", "camera/image_raw");
-		get_parameter("image_topic", image_topic);
-    	RCLCPP_INFO(get_logger(), "image topic: %s", image_topic.c_str());
 
 		// --- Actuator configuration ---
 		// Each actuator owns a contiguous slice of the normalized [0,1] optimizer output.
@@ -160,43 +157,23 @@ namespace exp_node
 
     	generate_LUT();
     	sub_camera_ = image_transport::create_subscription(
-    		this, image_topic,
+    		this, "image/in",
     		[this](const sensor_msgs::msg::Image::ConstSharedPtr & msg){ CameraCb(msg); },
     		"raw");
 
-		declare_parameter<std::string>("shutter_speed_apply_topic", "expose_us");
-		std::string shutter_speed_topic;
-		get_parameter("shutter_speed_apply_topic", shutter_speed_topic);
-    	RCLCPP_INFO(get_logger(), "shutter speed apply topic: %s", shutter_speed_topic.c_str());
-		shutter_speed_us_pub = this->create_publisher<std_msgs::msg::Int32>(shutter_speed_topic, 10);
+		shutter_speed_us_pub = this->create_publisher<std_msgs::msg::Int32>("expose_us/out", 10);
 
-		declare_parameter<std::string>("gain_apply_topic", "gain_db");
-		std::string gain_topic;
-		get_parameter("gain_apply_topic", gain_topic);
-    	RCLCPP_INFO(get_logger(), "gain apply topic: %s", gain_topic.c_str());
-		gain_db_pub = this->create_publisher<std_msgs::msg::Float32>(gain_topic, 10);
+		gain_db_pub = this->create_publisher<std_msgs::msg::Float32>("gain_db/out", 10);
 
-		declare_parameter<std::string>("led_apply_topic", "");
-		std::string led_topic;
-		get_parameter("led_apply_topic", led_topic);
-		if (!led_topic.empty() && led_portion_ > 0.0) {
-			led_pub_ = this->create_publisher<std_msgs::msg::Float32>(led_topic, 10);
-			RCLCPP_INFO(get_logger(), "led apply topic: %s", led_topic.c_str());
+		if (led_portion_ > 0.0) {
+			led_pub_ = this->create_publisher<std_msgs::msg::Float32>("led_w/out", 10);
 		} else {
-			RCLCPP_INFO(get_logger(), "LED actuator disabled (led_portion=%.2f, topic='%s')", led_portion_, led_topic.c_str());
+			RCLCPP_INFO(get_logger(), "LED actuator disabled (led_portion=%.2f)", led_portion_);
 		}
 
-		declare_parameter<std::string>("shutter_limit_topic", "");
-		std::string shutter_limit_topic;
-		get_parameter("shutter_limit_topic", shutter_limit_topic);
-		if (!shutter_limit_topic.empty()) {
-			shutter_limit_sub_ = this->create_subscription<std_msgs::msg::Int32>(
-				shutter_limit_topic, 10,
-				std::bind(&ExpNode::shutterLimitCb, this, std::placeholders::_1));
-			RCLCPP_INFO(get_logger(), "shutter limit topic: %s", shutter_limit_topic.c_str());
-		} else {
-			RCLCPP_INFO(get_logger(), "Dynamic shutter limit disabled (shutter_limit_topic not set)");
-		}
+		shutter_limit_sub_ = this->create_subscription<std_msgs::msg::Int32>(
+			"shutter_limit/in", 10,
+			std::bind(&ExpNode::shutterLimitCb, this, std::placeholders::_1));
 
 		gamma_est_pub_         = this->create_publisher<std_msgs::msg::Float32>("gradient/gamma_est", 10);
 		gradient_pub_          = this->create_publisher<std_msgs::msg::Float32>("gradient/D", 10);
