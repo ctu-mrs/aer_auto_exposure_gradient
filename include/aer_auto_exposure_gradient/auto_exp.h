@@ -32,7 +32,6 @@
 #include <eigen3/Eigen/Dense>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/image_encodings.hpp>
-#include <sensor_msgs/msg/camera_info.hpp>
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/float32.hpp>
 

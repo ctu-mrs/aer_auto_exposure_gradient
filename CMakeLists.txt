@@ -5,7 +5,7 @@ project(aer_auto_exposure_gradient)
 #   add_compile_options(-Wall -Wextra -Wpedantic)
 # endif()
 
-set(CMAKE_CXX_FLAGS "-std=c++23 ${CMAKE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "-std=c++17 ${CMAKE_CXX_FLAGS}")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(ament_cmake REQUIRED)
