@@ -27,10 +27,15 @@ def get_processed_launch_objects(context):
         namespace=uav_name,
         parameters=parameters,
         remappings=[
-            ('image/in',        f'/{uav_name}/{camera_name}/image_raw'),
-            ('expose_us/out',   f'/{uav_name}/expose_us'),
-            ('gain_db/out',     f'/{uav_name}/gain_db'),
-            ('shutter_limit/in', f'/{uav_name}/shutter_limit'),
+            ('image/in',           PathJoinSubstitution(['/', uav_name, camera_name, 'image_raw'])),
+            ('expose_us/out',      PathJoinSubstitution(['/', uav_name, camera_name, 'expose_us'])),
+            ('gain_db/out',        PathJoinSubstitution(['/', uav_name, camera_name, 'gain_db'])),
+            ('shutter_limit/in',   PathJoinSubstitution(['/', uav_name, camera_name, 'shutter_limit'])),
+            ('gradient/D',         PathJoinSubstitution(['/', uav_name, camera_name, 'gradient/D'])),
+            ('gradient/D_clipped', PathJoinSubstitution(['/', uav_name, camera_name, 'gradient/D_clipped'])),
+            ('gradient/gamma_est', PathJoinSubstitution(['/', uav_name, camera_name, 'gradient/gamma_est'])),
+            ('plot_example',       PathJoinSubstitution(['/', uav_name, camera_name, 'plot_example'])),
+            ('plot_sweep',         PathJoinSubstitution(['/', uav_name, camera_name, 'plot_sweep']))
         ],
         extra_arguments=[{'use_intra_process_comms': True}],
     )
@@ -55,7 +60,7 @@ def generate_launch_description():
 
     declare_camera_name = DeclareLaunchArgument(
         'camera_name',
-        default_value='bluefox',
+        default_value='',
         description='Camera name used in topic remapping'
     )
 
