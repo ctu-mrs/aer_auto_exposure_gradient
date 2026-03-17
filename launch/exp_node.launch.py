@@ -44,7 +44,7 @@ def get_processed_launch_objects(context):
         name='autoexposure',
         namespace='',
         package='rclcpp_components',
-        executable='component_container',
+        executable='component_container_mt',
         composable_node_descriptions=[aer_node],
     )
 

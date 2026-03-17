@@ -124,6 +124,14 @@ class ExpNode : public rclcpp::Node {
   double met_act_thresh = 0.06;
   double lamda = 1000.0; // The lamda value used in Shim's 2014 paper as a control parameter to adjust the mapping tendency (larger->steeper)
 
+  // Soft percentile weighting (Zhang et al. 2017)
+  bool softperc_weighting_;
+  double softperc_percentile_;
+  double softperc_k_;                     // exponent sharpening the bell-shaped weight curve (paper uses 5; <1 flattens)
+  // bool softperc_integer_hist_;            // use histogram sort (fast) vs float sort
+  // bool softperc_trapezoid_approx_;        // trapezoidal weight approximation inside histogram path
+  std::vector<double> softperc_weights_;  // precomputed, unnormalized
+
   bool do_sweep;
 
   //ros::NodeHandle nh_;
@@ -156,6 +164,8 @@ class ExpNode : public rclcpp::Node {
 #endif
 
   int img_proc_loop_hz_;
+  int img_proc_width_;
+  int img_proc_height_;
 
   // Optimizer timer state
   double coeff_[POLYNOME_DEGREE + 1];           // curve-fit coefficients shared with optimizerCb
@@ -165,6 +175,10 @@ class ExpNode : public rclcpp::Node {
   std::mutex optimizer_mutex_;
   std::mutex actuator_mutex_;  // protects actuator_slices_, shutter_max_s_, shutter_portion_
   rclcpp::TimerBase::SharedPtr optimizer_timer_;
+
+  // Separate callback group for the optimizer timer so it can run concurrently
+  // with the image callback when using component_container_mt.
+  rclcpp::CallbackGroup::SharedPtr optimizer_cb_group_;
 
   // Gradient optimizer state (optimizer thread only, no mutex needed)
   double gamma_est_ = 1.0;  // current gamma estimate, resets to 1.0 on each new image

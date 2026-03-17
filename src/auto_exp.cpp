@@ -108,6 +108,12 @@ namespace exp_node
 		}
     	RCLCPP_INFO(get_logger(), "img_proc_loop_hz: %i", img_proc_loop_hz_);
 
+		declare_parameter<int>("img_proc_width", 342);
+		get_parameter("img_proc_width", img_proc_width_);
+		declare_parameter<int>("img_proc_height", 408);
+		get_parameter("img_proc_height", img_proc_height_);
+		RCLCPP_INFO(get_logger(), "img_proc_size: %dx%d", img_proc_width_, img_proc_height_);
+
 		declare_parameter<int>("optimizer_loop_hz", 10);
 		get_parameter("optimizer_loop_hz", optimizer_loop_hz_);
 		if (optimizer_loop_hz_ <= 0) {
@@ -195,6 +201,47 @@ namespace exp_node
 		get_parameter("simple_step_size", simple_step_size_);
 		RCLCPP_INFO(get_logger(), "simple_step_size: %.4f", simple_step_size_);
 
+		declare_parameter<bool>("softperc_weighting", false);
+		get_parameter("softperc_weighting", softperc_weighting_);
+		RCLCPP_INFO(get_logger(), "softperc_weighting: %s", softperc_weighting_ ? "true" : "false");
+
+		declare_parameter<double>("softperc_percentile", 0.75);
+		get_parameter("softperc_percentile", softperc_percentile_);
+		softperc_percentile_ = std::clamp(softperc_percentile_, 0.0, 1.0);
+		RCLCPP_INFO(get_logger(), "softperc_percentile: %.2f", softperc_percentile_);
+
+		declare_parameter<double>("softperc_k", 5.0);
+		get_parameter("softperc_k", softperc_k_);
+		softperc_k_ = std::max<double>(0.0, softperc_k_);
+		RCLCPP_INFO(get_logger(), "softperc_k: %.3f", softperc_k_);
+
+		// declare_parameter<bool>("softperc_integer_hist", true);
+		// get_parameter("softperc_integer_hist", softperc_integer_hist_);
+		// RCLCPP_INFO(get_logger(), "softperc_integer_hist: %s", softperc_integer_hist_ ? "true" : "false");
+
+		// declare_parameter<bool>("softperc_trapezoid_approx", false);
+		// get_parameter("softperc_trapezoid_approx", softperc_trapezoid_approx_);
+		// RCLCPP_INFO(get_logger(), "softperc_trapezoid_approx: %s", softperc_trapezoid_approx_ ? "true" : "false");
+
+		if (softperc_weighting_) {
+			// Image is always resized to img_proc_width_ x img_proc_height_ before metric computation
+			const int S    = img_proc_width_ * img_proc_height_;
+			const int peak = static_cast<int>(softperc_percentile_ * S);
+			const double k = softperc_k_;
+			softperc_weights_.resize(S);
+			for (int i = 0; i <= peak; i++) {
+				double arg = (peak > 0) ? (M_PI * i / (2.0 * peak)) : M_PI_2;
+				softperc_weights_[i] = std::pow(std::sin(arg), k);
+			}
+			const int tail = S - peak;
+			for (int i = peak + 1; i < S; i++) {
+				double arg = M_PI_2 - M_PI * (i - peak) / (2.0 * tail);
+				softperc_weights_[i] = std::pow(std::sin(arg), k);
+			}
+
+			RCLCPP_INFO(get_logger(), "softperc_weights precomputed (S=%d, peak=%d)", S, peak);
+		}
+
 		test_sweep_step_ = 0;
 		metric_tmp = 0;
 
@@ -203,10 +250,16 @@ namespace exp_node
 		gamma_index = gamma_neutral_index_;
 		for (int i = 0; i < POLYNOME_DEGREE + 1; i++) coeff_[i] = 0.0;
 
+		// Own callback group so the optimizer timer can run concurrently with
+		// the image callback under component_container_mt.
+		optimizer_cb_group_ = create_callback_group(
+			rclcpp::CallbackGroupType::MutuallyExclusive);
+
 		int optimizer_period_ms = static_cast<int>(1000.0 / optimizer_loop_hz_);
 		optimizer_timer_ = create_wall_timer(
 			std::chrono::milliseconds(optimizer_period_ms),
-			std::bind(&ExpNode::optimizerCb, this)
+			std::bind(&ExpNode::optimizerCb, this),
+			optimizer_cb_group_
 		);
 
 #ifdef WITH_PLOTTER
@@ -376,7 +429,7 @@ namespace exp_node
 				}
 
 				cv::Mat image2;
-				cv::Size size(342,408);
+				cv::Size size(img_proc_width_, img_proc_height_);
 				cv::resize(image1, image2, size);
 
 				double test_metric = image_gradient_gamma(image2, 3);
@@ -451,7 +504,7 @@ namespace exp_node
 
 			cv::Mat image_current;
 			//cv::Size size(512,612); // may want to try size(408,342) if speed is limited
-			cv::Size size(342,408);
+			cv::Size size(img_proc_width_, img_proc_height_);
 			cv::resize(image_capture, image_current, size);
 			//image_capture = image_current;
 
@@ -470,9 +523,14 @@ namespace exp_node
 			// loop to call image_gradient_gamma function to obtain image gradient of each gamma
 			// manually adjust the possible gamma values and the number of gamma to use
 			for (int i = 0; i < gamma_num_points_; ++i){
-				metric_[i] = image_gradient_gamma(image_current, i)/1000000.0; // passing the corresponding index
-				//RCLCPP_INFO(get_logger(), "metric for gamma %f: %f", gamma_[i], metric_[i]); // comment
+				metric_[i] = image_gradient_gamma(image_current, i);
+				RCLCPP_INFO(get_logger(), "metric for gamma %f: %f", gamma_[i], metric_[i]); // comment
 			}
+			// Normalize metric array so the peak is 1.0 — keeps optimizer behavior
+			// independent of the absolute scale of each metric type.
+			const double metric_max = *std::max_element(metric_.begin(), metric_.end());
+			if (metric_max > 0.0)
+				for (double& m : metric_) m /= metric_max;
 
 			// loop to find out the index that correspond to the optimum/maximum gamma value
 			double temp = -1.0;
@@ -608,30 +666,79 @@ namespace exp_node
 
 		////////////////////// The following computes the gradient metric based on the gradient image ///////////////////////////
 
-		// Method 1: simple sumation of total gradient
-		//double metric= cv::sum(dst_img)[0]; // simple sum of total gradient as metric (Alternative 1 of the Shim's metric) 
-		
-		// Method 2: Shim's 2014 gradient metric function
-		// Using the metric equation given in Shim's 2014 paper
-		/* This second lookup table mapping streghtens smaller gradients and keeps the higher gradients as they are.
-		   For example, if signa = 15 and lamda = 1000:
-			- gradients with value smaller than 64 are thrown away
-			- some example gradients value mapping:
-				- 16 -> 64
-				- 30 -> 178
-				- 50 -> 201
-				- 100 -> 226
-				- 200 -> 247
-				- 250 -> 254
-				- 255 -> 255
-		*/ 
-		cv::LUT(dst_img, lut_metric_, res);
-		res.convertTo(res, CV_64FC1);
-		
-		double metric= cv::sum(res)[0];
+		double metric;
+
+		// Commented out softperc_integer_hist_ and softperc_trapezoid_approx_.
+		// They are just computational optimizations, probably not needed. User can put them back in the future.
+		if (softperc_weighting_) {
+			// Soft percentile metric (Zhang et al. 2017, eq. 9-10).
+			// Weights are precomputed at startup.
+			auto t0 = std::chrono::steady_clock::now();
+
+			// if (softperc_integer_hist_) {
+				// Fast path: histogram sort O(S), stays on uint8 values.
+				std::array<int, 256> hist = {};
+				for (int r = 0; r < dst_img.rows; r++) {
+					const uchar* row = dst_img.ptr<uchar>(r);
+					for (int c = 0; c < dst_img.cols; c++) hist[row[c]]++;
+				}
+				metric = 0.0;
+				int ordinal = 0;
+				// if (softperc_trapezoid_approx_) {
+				// 	// Approximate: average the weight at the first and last ordinal in
+				// 	// each bucket (trapezoidal rule). O(256) dot-product instead of O(S).
+				// 	// Accurate for the smooth sinusoidal weight curve.
+				// 	for (int v = 0; v < 256; v++) {
+				// 		if (hist[v] == 0) continue;
+				// 		double w_avg = (softperc_weights_[ordinal] +
+				// 		                softperc_weights_[ordinal + hist[v] - 1]) * 0.5;
+				// 		metric += w_avg * hist[v] * v;
+				// 		ordinal += hist[v];
+				// 	}
+				// } else {
+					// Exact: accumulate each pixel's individual weight. O(S) dot-product.
+					for (int v = 0; v < 256; v++) {
+						for (int cnt = 0; cnt < hist[v]; cnt++) {
+							metric += softperc_weights_[ordinal++] * v;
+						}
+					}
+				//}
+			// } else {
+			// 	// Float path: convert to float64, sort, dot-product.
+			// 	dst_img.convertTo(dst_img, CV_64FC1);
+			// 	std::vector<double> grads(dst_img.begin<double>(), dst_img.end<double>());
+			// 	std::sort(grads.begin(), grads.end());
+			// 	metric = 0.0;
+			// 	for (int i = 0; i < static_cast<int>(grads.size()); i++) {
+			// 		metric += softperc_weights_[i] * grads[i];
+			// 	}
+			// }
+
+			auto t1 = std::chrono::steady_clock::now();
+			double elapsed_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+			RCLCPP_INFO(get_logger(), "softperc metric (int_hist_exact): %.1f µs", elapsed_us);
+			RCLCPP_INFO(get_logger(), "softperc value: %f", metric);
+		} else {
+			// Method: Shim's 2014 gradient metric function
+			// Using the metric equation given in Shim's 2014 paper
+			/* This second lookup table mapping streghtens smaller gradients and keeps the higher gradients as they are.
+			   For example, if signa = 15 and lamda = 1000:
+				- gradients with value smaller than 64 are thrown away
+				- some example gradients value mapping:
+					- 16 -> 64
+					- 30 -> 178
+					- 50 -> 201
+					- 100 -> 226
+					- 200 -> 247
+					- 250 -> 254
+					- 255 -> 255
+			*/
+			cv::LUT(dst_img, lut_metric_, res);
+			metric = cv::sum(res)[0];
+		}
 
 		//cv::imshow("image_to_show",dst_img); // comment later
-		return metric;
+		return metric / static_cast<double>(dst_img.rows * dst_img.cols);
 	}
 
 	void ExpNode::shutterLimitCb(const std_msgs::msg::Int32::ConstSharedPtr& msg) {
@@ -689,14 +796,14 @@ namespace exp_node
 				case ActuatorSlice::Type::LED:     led       = value; break;
 			}
 
-			switch (slice.type) {
-				case ActuatorSlice::Type::SHUTTER: RCLCPP_INFO(get_logger(), "shutter: %f", slice.portion); break;
-				case ActuatorSlice::Type::GAIN:    RCLCPP_INFO(get_logger(), "gain:    %f", slice.portion); break;
-				case ActuatorSlice::Type::LED:     RCLCPP_INFO(get_logger(), "led:     %f", slice.portion); break;
-			}
+			// switch (slice.type) {
+			// 	case ActuatorSlice::Type::SHUTTER: RCLCPP_INFO(get_logger(), "shutter: %f", slice.portion); break;
+			// 	case ActuatorSlice::Type::GAIN:    RCLCPP_INFO(get_logger(), "gain:    %f", slice.portion); break;
+			// 	case ActuatorSlice::Type::LED:     RCLCPP_INFO(get_logger(), "led:     %f", slice.portion); break;
+			// }
 		}
 
-		RCLCPP_INFO(get_logger(), "exposure_level_max_: %f" ,exposure_level_max_);
+		//RCLCPP_INFO(get_logger(), "exposure_level_max_: %f" ,exposure_level_max_);
 
 		std_msgs::msg::Int32 shutter_msg;
 		shutter_msg.data = static_cast<int>(shutter_s * 1000000.0);  // s → µs
@@ -731,6 +838,7 @@ namespace exp_node
 					} else {
 						q[i] = 0;
 					}
+					//RCLCPP_INFO(get_logger(), "weight: %f", ((double)q[i])/((double)i));
 				}
 			} // end of for loop with index i
 		}// end of for loop with index j
